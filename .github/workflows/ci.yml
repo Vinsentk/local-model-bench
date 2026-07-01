@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile
+        run: python -m compileall -q src tests
+      - name: Test
+        run: python -m pytest -q
+
+  build:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Windows app
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalModelBench-windows
+          path: dist/LocalModelBench
