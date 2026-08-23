@@ -1,0 +1,3 @@
+time=2099-01-01T00:00:00.000+00:00 level=INFO source=images.go:354 msg="template selection" model=synthetic/model:fixture selected=fixture
+[GIN] 2099/01/01 - 00:00:01 | 200 | 1ms | 127.0.0.1 | POST     "/api/generate"
+[GIN] 2099/01/01 - 00:00:02 | 499 | 2ms | 127.0.0.1 | POST     "/api/chat"
