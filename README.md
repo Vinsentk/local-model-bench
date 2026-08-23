@@ -243,6 +243,12 @@ src/local_model_bench/
   ui.py              PySide6 Windows UI
 ```
 
+## Documentation
+
+- [Product requirements](docs/PRD.md)
+- [Architecture and integration boundaries](docs/ARCHITECTURE.md)
+- [Public release checklist](docs/PUBLIC_RELEASE.md)
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
