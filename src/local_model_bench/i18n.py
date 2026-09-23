@@ -701,7 +701,10 @@ TEXT["zh"] = TEXT["en"] | {
 
 TEXT["en"].update({
     "register_ollama": "Import GGUF to Ollama", "register_opencodex": "Register in OpenCodex",
-    "chart_comparison": "MODEL COMPARISON",
+    "benchmark_scores": "INSTALLED MODEL SCORES",
+    "score_scope": "Installed {count} · Tested {tested}",
+    "benchmark_not_tested": "Not tested",
+    "benchmark_test_hint": "Run the basic check or a benchmark to see measured results.",
     "connect_codex": "Connect to Codex", "basic_test": "Basic run test",
     "select_model_first": "Select an installed model first.",
     "ollama_name_prompt": "Ollama model name:",
@@ -714,7 +717,10 @@ TEXT["en"].update({
 })
 TEXT["ko"].update({
     "register_ollama": "GGUF → Ollama 등록", "register_opencodex": "OpenCodex 등록",
-    "chart_comparison": "모델 비교 그래프",
+    "benchmark_scores": "보유 모델 점수표",
+    "score_scope": "보유 {count}개 · 측정 {tested}개",
+    "benchmark_not_tested": "미검증",
+    "benchmark_test_hint": "기초 구동 테스트나 벤치마크를 실행하면 결과가 표시됩니다.",
     "connect_codex": "Codex 연결", "basic_test": "기초 구동 테스트",
     "select_model_first": "설치된 모델을 먼저 선택하세요.",
     "ollama_name_prompt": "Ollama 모델 이름:",
@@ -727,7 +733,10 @@ TEXT["ko"].update({
 })
 TEXT["ja"].update({
     "register_ollama": "GGUFをOllamaへ登録", "register_opencodex": "OpenCodexに登録",
-    "chart_comparison": "モデル比較グラフ",
+    "benchmark_scores": "インストール済みモデルのスコア",
+    "score_scope": "保有 {count} · 測定済み {tested}",
+    "benchmark_not_tested": "未測定",
+    "benchmark_test_hint": "基本テストまたはベンチマークを実行してください。",
     "connect_codex": "Codexに接続", "basic_test": "基本動作テスト",
     "select_model_first": "インストール済みモデルを選択してください。",
     "connection_hint": "モデルを選択して登録・接続・テストします。",
@@ -735,7 +744,10 @@ TEXT["ja"].update({
 })
 TEXT["zh"].update({
     "register_ollama": "导入GGUF到Ollama", "register_opencodex": "注册到OpenCodex",
-    "chart_comparison": "模型对比图表",
+    "benchmark_scores": "已安装模型评分",
+    "score_scope": "已安装 {count} · 已测试 {tested}",
+    "benchmark_not_tested": "未测试",
+    "benchmark_test_hint": "运行基础测试或基准测试后显示结果。",
     "connect_codex": "连接Codex", "basic_test": "基础运行测试",
     "select_model_first": "请先选择已安装模型。",
     "connection_hint": "选择模型以注册、连接或测试。",

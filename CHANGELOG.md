@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1 - 2026-09-23
+
+- Show every installed Ollama model in the benchmark comparison, including models without a benchmark result.
+- Remove the comparison graph and show scores, measured generation TPS, and recommended uses in a prominent table on a vertically scrollable benchmark page.
+
 ## 0.2.0 - 2026-09-23
 
 - Added selected-model GGUF import, OpenCodex registration, Codex catalog connection, and connection cleanup on Ollama deletion.

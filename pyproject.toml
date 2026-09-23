@@ -1,6 +1,6 @@
 [project]
 name = "local-model-bench"
-version = "0.2.0"
+version = "0.2.1"
 description = "Windows UI for testing and recommending Ollama local models."
 requires-python = ">=3.11"
 dependencies = [

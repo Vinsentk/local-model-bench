@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QRectF, QThreadPool, QTimer, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QIcon, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -60,7 +61,7 @@ from .store import ResultStore
 TABLE_HEADERS = {
     "installed": ["Model", "ID", "Size", "Params", "Thinking", "Quant", "Last Status", "Total", "Speed", "1d Tokens", "7d Tokens", "Last Tested", "Modified"],
     "history": ["Tested", "Status", "Total", "Speed", "Quality", "Best Uses"],
-    "live": ["Model", "Status", "Size", "Thinking", "Total", "Speed", "Quality", "CPU Peak", "GPU Peak", "VRAM Peak", "Best Uses"],
+    "live": ["Model", "Status", "Total Score", "Speed Score", "Quality Score", "Generation TPS", "Best Uses"],
     "rankings": ["Use Case", "#1", "#2", "#3"],
     "recommend": ["Page", "Model", "Pull Name", "Quant", "Size", "Thinking", "Fit", "Score", "Uses", "Downloads", "Reason"],
     "usage_active": ["Model", "Size", "Processor", "Until", "Last Checked"],
@@ -134,7 +135,7 @@ TABLE_HEADER_TRANSLATIONS = {
     "ko": {
         "installed": ["모델", "ID", "크기", "파라미터", "Thinking", "양자화", "최근 상태", "총점", "속도", "1일 토큰", "7일 토큰", "마지막 테스트", "수정일"],
         "history": ["테스트일", "상태", "총점", "속도", "품질", "추천 용도"],
-        "live": ["모델", "상태", "크기", "Thinking", "총점", "속도", "품질", "CPU 최고", "GPU 최고", "VRAM 최고", "추천 용도"],
+        "live": ["모델", "상태", "총점", "속도 점수", "품질 점수", "생성 TPS", "추천 용도"],
         "rankings": ["용도", "1위", "2위", "3위"],
         "recommend": ["페이지", "모델", "Pull 이름", "양자화", "크기", "Thinking", "적합도", "점수", "용도", "다운로드", "이유"],
         "usage_active": ["모델", "크기", "프로세서", "유지 시간", "확인 시간"],
@@ -145,7 +146,7 @@ TABLE_HEADER_TRANSLATIONS = {
     "ja": {
         "installed": ["モデル", "ID", "サイズ", "パラメータ", "Thinking", "量子化", "最新状態", "総合", "速度", "1日トークン", "7日トークン", "最終テスト", "更新日"],
         "history": ["テスト日", "状態", "総合", "速度", "品質", "最適な用途"],
-        "live": ["モデル", "状態", "サイズ", "Thinking", "総合", "速度", "品質", "CPUピーク", "GPUピーク", "VRAMピーク", "最適な用途"],
+        "live": ["モデル", "状態", "総合点", "速度点", "品質点", "生成 TPS", "最適な用途"],
         "rankings": ["用途", "1位", "2位", "3位"],
         "recommend": ["ページ", "モデル", "Pull名", "量子化", "サイズ", "Thinking", "適合", "スコア", "用途", "DL数", "理由"],
         "usage_active": ["モデル", "サイズ", "プロセッサ", "保持期限", "確認時刻"],
@@ -156,7 +157,7 @@ TABLE_HEADER_TRANSLATIONS = {
     "zh": {
         "installed": ["模型", "ID", "大小", "参数", "Thinking", "量化", "最新状态", "总分", "速度", "1日Token", "7日Token", "最后测试", "修改时间"],
         "history": ["测试时间", "状态", "总分", "速度", "质量", "最佳用途"],
-        "live": ["模型", "状态", "大小", "Thinking", "总分", "速度", "质量", "CPU峰值", "GPU峰值", "VRAM峰值", "最佳用途"],
+        "live": ["模型", "状态", "总分", "速度分", "质量分", "生成 TPS", "最佳用途"],
         "rankings": ["用途", "第1", "第2", "第3"],
         "recommend": ["页", "模型", "Pull 名称", "量化", "大小", "Thinking", "适配", "分数", "用途", "下载", "原因"],
         "usage_active": ["模型", "大小", "处理器", "保留到", "检查时间"],
@@ -355,109 +356,6 @@ class SortTableWidgetItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
-class BenchmarkChart(QWidget):
-    """Small interactive chart backed by the current benchmark reports."""
-
-    reportSelected = Signal(int)
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("benchmarkChart")
-        self.setMinimumHeight(220)
-        self.setMouseTracking(True)
-        self.reports: list[BenchmarkReport] = []
-        self.chart_metric_key = "score"
-        self.selected_index: int | None = None
-        self._bars: list[tuple[QRectF, int]] = []
-
-    def set_reports(self, reports: list[BenchmarkReport]) -> None:
-        self.reports = reports[:8]
-        self.update()
-
-    def set_metric(self, metric: str) -> None:
-        self.chart_metric_key = metric
-        self.update()
-
-    def set_selected(self, index: int | None) -> None:
-        self.selected_index = index
-        self.update()
-
-    def _value(self, report: BenchmarkReport) -> float:
-        if self.chart_metric_key == "tps":
-            return max(0.0, report.avg_tokens_per_second) if report.run_settings.get("tps_source") == "ollama_eval" else 0.0
-        if self.chart_metric_key == "vram":
-            return max(0.0, float(report.resource_summary.get("vram_used_gb_peak", 0) or 0))
-        return max(0.0, report.score.total)
-
-    def paintEvent(self, _event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        outer = QRectF(1, 1, self.width() - 2, self.height() - 2)
-        painter.setPen(QPen(QColor("#2a4963"), 1))
-        painter.setBrush(QColor("#13263c"))
-        painter.drawRoundedRect(outer, 12, 12)
-        self._bars = []
-        if not self.reports:
-            painter.setPen(QColor("#9cb5ce"))
-            painter.drawText(outer, Qt.AlignmentFlag.AlignCenter, "Run a benchmark to see model comparisons")
-            return
-        left, right, top, bottom = 44.0, 20.0, 30.0, 48.0
-        chart_height = max(1.0, self.height() - top - bottom)
-        chart_width = max(1.0, self.width() - left - right)
-        values = [self._value(report) for report in self.reports]
-        scale = 100.0 if self.chart_metric_key == "score" else max(1.0, max(values) * 1.15)
-        for fraction in (0.0, .5, 1.0):
-            y = top + chart_height * (1 - fraction)
-            painter.setPen(QPen(QColor("#2d4560"), 1, Qt.PenStyle.DashLine))
-            painter.drawLine(int(left), int(y), int(self.width() - right), int(y))
-            painter.setPen(QColor("#91aac4"))
-            painter.drawText(7, int(y) + 4, f"{scale * fraction:g}")
-        slot = chart_width / len(self.reports)
-        bar_width = min(86.0, slot * .58)
-        accent = {"score": ("#2bd6bb", "#1b8e8d"), "tps": ("#5eb9ff", "#2369a8"),
-                  "vram": ("#f6c26b", "#a86c3d")}[self.chart_metric_key]
-        for index, (report, value) in enumerate(zip(self.reports, values)):
-            height = max(3.0, chart_height * min(1.0, value / scale)) if value else 3.0
-            x = left + index * slot + (slot - bar_width) / 2
-            rect = QRectF(x, top + chart_height - height, bar_width, height)
-            gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            colors = accent if report.status == "OK" else (("#eeb36b", "#a55b46") if report.status == "PARTIAL" else ("#e77a87", "#8c3a58"))
-            gradient.setColorAt(0, QColor(colors[0]))
-            gradient.setColorAt(1, QColor(colors[1]))
-            painter.setBrush(QBrush(gradient))
-            painter.setPen(QPen(QColor("#e4fcff" if self.selected_index == index else colors[1]),
-                                2 if self.selected_index == index else 1))
-            painter.drawRoundedRect(rect, 6, 6)
-            painter.setPen(QColor("#ecf7ff"))
-            suffix = "" if self.chart_metric_key == "score" else " TPS" if self.chart_metric_key == "tps" else " GB"
-            value_label = "—" if self.chart_metric_key == "tps" and value <= 0 else f"{value:.1f}{suffix}"
-            painter.drawText(QRectF(x - 10, rect.top() - 24, bar_width + 20, 20),
-                             Qt.AlignmentFlag.AlignCenter, value_label)
-            label = painter.fontMetrics().elidedText(report.model_name, Qt.TextElideMode.ElideMiddle,
-                                                      max(48, int(slot - 8)))
-            painter.setPen(QColor("#b6cce3"))
-            painter.drawText(QRectF(left + index * slot, self.height() - 38, slot, 28),
-                             Qt.AlignmentFlag.AlignCenter, label)
-            self._bars.append((QRectF(left + index * slot, top, slot, chart_height + 36), index))
-
-    def mouseMoveEvent(self, event) -> None:
-        index = next((index for rect, index in self._bars if rect.contains(event.position())), None)
-        if index is None:
-            self.setToolTip("")
-            return
-        report = self.reports[index]
-        measured_tps = (report.avg_tokens_per_second if report.run_settings.get("tps_source") == "ollama_eval" else 0)
-        self.setToolTip(f"{report.model_name}\nStatus: {report.status}\nScore: {report.score.total}"
-                        f"\nGeneration TPS: {measured_tps or 'unmeasured'}"
-                        f"\nVRAM peak: {report.resource_summary.get('vram_used_gb_peak', 'unmeasured')} GB")
-
-    def mousePressEvent(self, event) -> None:
-        index = next((index for rect, index in self._bars if rect.contains(event.position())), None)
-        if index is not None:
-            self.set_selected(index)
-            self.reportSelected.emit(index)
-
-
 class RangeSlider(QWidget):
     rangeChanged = Signal(int, int)
 
@@ -599,6 +497,7 @@ class MainWindow(QMainWindow):
         self.recommendations: list[ModelRecommendation] = self._load_cached_recommendations()
         self.excluded_recommendations: list[str] = list(self.settings.get("excluded_recommendations", []))
         self.live_reports: list[BenchmarkReport] = []
+        self.comparison_rows: list[tuple[OllamaModel, BenchmarkReport | None]] = []
         self.results_rows: list[dict] = []
         self.active_workers: set[Worker] = set()
         self.pending_download: ModelRecommendation | None = None
@@ -637,7 +536,7 @@ class MainWindow(QMainWindow):
     def _load_recent_benchmarks(self) -> None:
         """Show saved model comparisons immediately, before a new run is started."""
         reports: list[BenchmarkReport] = []
-        for row in self.store.latest_report_per_model(limit=30, include_deleted=False):
+        for row in self.store.latest_report_per_model(limit=5000, include_deleted=False):
             try:
                 status = str(row.get("status", ""))
                 settings = row.get("run_settings") or {}
@@ -667,7 +566,7 @@ class MainWindow(QMainWindow):
         self.live_reports = reports
         self._render_live_reports()
         self._render_rankings()
-        if reports:
+        if self.live_table.rowCount():
             self.live_table.setCurrentCell(0, 0)
 
     def _build_installed_tab(self) -> None:
@@ -733,6 +632,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
+        scroll_page = QScrollArea()
+        scroll_page.setWidgetResizable(True)
+        scroll_page.setFrameShape(QFrame.Shape.NoFrame)
+        scroll_page.setWidget(page)
 
         controls = QHBoxLayout()
         self.model_label = QLabel()
@@ -801,23 +704,18 @@ class MainWindow(QMainWindow):
         self.ram_title, self.ram_value = self._score_card(resource_panel, 0, 2)
         self.vram_title, self.vram_value = self._score_card(resource_panel, 0, 3)
 
-        chart_header = QHBoxLayout()
-        self.chart_title = QLabel()
-        self.chart_title.setObjectName("sectionTitle")
-        self.chart_metric = QComboBox()
-        self.chart_metric.addItem("Score", "score")
-        self.chart_metric.addItem("Generation TPS", "tps")
-        self.chart_metric.addItem("VRAM peak", "vram")
-        self.chart_metric.currentIndexChanged.connect(
-            lambda _: self.benchmark_chart.set_metric(self.chart_metric.currentData()))
-        chart_header.addWidget(self.chart_title)
-        chart_header.addStretch()
-        chart_header.addWidget(self.chart_metric)
-        self.benchmark_chart = BenchmarkChart()
-        self.benchmark_chart.reportSelected.connect(self._select_chart_report)
+        score_header = QHBoxLayout()
+        self.scores_title = QLabel()
+        self.scores_title.setObjectName("sectionTitle")
+        self.score_scope_label = QLabel()
+        self.score_scope_label.setObjectName("scoreScope")
+        score_header.addWidget(self.scores_title)
+        score_header.addStretch()
+        score_header.addWidget(self.score_scope_label)
 
-        self.live_table = QTableWidget(0, 11)
+        self.live_table = QTableWidget(0, 7)
         self._setup_table(self.live_table, "live")
+        self.live_table.setMinimumHeight(440)
         self.live_table.itemSelectionChanged.connect(self.show_benchmark_detail)
 
         lower = QHBoxLayout()
@@ -847,12 +745,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(process_frame)
         layout.addLayout(score_panel)
         layout.addLayout(resource_panel)
-        layout.addLayout(chart_header)
-        layout.addWidget(self.benchmark_chart)
+        layout.addLayout(score_header)
         layout.addWidget(self.live_table, stretch=3)
         layout.addLayout(lower, stretch=2)
         layout.addWidget(self.progress_log, stretch=1)
-        self.tabs.addTab(page, "")
+        self.tabs.addTab(scroll_page, "")
 
     def _build_recommendations_tab(self) -> None:
         page = QWidget()
@@ -1266,6 +1163,10 @@ class MainWindow(QMainWindow):
     def _on_installed(self, models: list[OllamaModel]) -> None:
         self.installed_models = models
         self._render_installed_models(reset_combo=True)
+        self._render_live_reports()
+        self._render_rankings()
+        if self.live_table.rowCount() and self.live_table.currentRow() < 0:
+            self.live_table.setCurrentCell(0, 0)
         self.show_selected_model_history()
         self._enrich_installed_hf_metadata(models)
 
@@ -1581,6 +1482,10 @@ class MainWindow(QMainWindow):
         self._set_resource_cards(report)
         self._render_live_reports()
         self._render_rankings()
+        for index, (model, _) in enumerate(self.comparison_rows):
+            if model.name == report.model_name:
+                self._select_score_row(index)
+                break
         self.show_benchmark_detail()
         progress = f" [{self._run_progress_text()}]" if self.run_all_total > 0 else ""
         self._append_log(f"{report.model_name}: {report.status}, score {report.score.total}, {self._report_tps(report)}{progress}")
@@ -2450,46 +2355,53 @@ class MainWindow(QMainWindow):
             self._append_log(tr(self.language, "endpoint_not_found"))
 
     def _render_live_reports(self) -> None:
-        self.benchmark_chart.set_reports(self.live_reports)
+        selected = self._selected_source_index(self.live_table)
+        selected_name = (self.comparison_rows[selected][0].name
+                         if selected is not None and selected < len(self.comparison_rows) else None)
+        latest: dict[str, BenchmarkReport] = {}
+        for report in self.live_reports:
+            latest.setdefault(report.model_name, report)
+        self.comparison_rows = [(model, latest.get(model.name)) for model in self.installed_models]
+        tested = sum(report is not None for _, report in self.comparison_rows)
+        self.score_scope_label.setText(tr(self.language, "score_scope").format(
+            count=len(self.comparison_rows), tested=tested))
         self._begin_table_update(self.live_table)
-        self.live_table.setRowCount(len(self.live_reports))
-        for row, report in enumerate(self.live_reports):
-            resources = report.resource_summary
+        self.live_table.setRowCount(len(self.comparison_rows))
+        for row, (model, report) in enumerate(self.comparison_rows):
             values = [
-                report.model_name,
-                report.status,
-                report.size_label,
-                self._thinking_label_for_model(report.model_name),
-                report.score.total,
-                report.score.speed,
-                report.score.quality,
-                self._percent(resources, "cpu_percent_peak"),
-                self._percent(resources, "gpu_percent_peak"),
-                self._gb_delta(resources, "vram_used_gb"),
-                self._format_use_list(report.score.recommended_uses),
+                model.name,
+                report.status if report else tr(self.language, "benchmark_not_tested"),
+                report.score.total if report else "—",
+                report.score.speed if report else "—",
+                report.score.quality if report else "—",
+                self._report_tps(report) if report else "—",
+                self._format_use_list(report.score.recommended_uses) if report else "—",
             ]
             sort_keys = [
-                report.model_name.casefold(),
-                report.status.casefold(),
-                self._size_sort_value(report.size_label),
-                self._thinking_sort_for_model(report.model_name),
-                report.score.total,
-                report.score.speed,
-                report.score.quality,
-                self._percent_sort_value(resources, "cpu_percent_peak"),
-                self._percent_sort_value(resources, "gpu_percent_peak"),
-                self._gb_sort_value(resources, "vram_used_gb"),
-                self._format_use_list(report.score.recommended_uses).casefold(),
+                model.name.casefold(),
+                values[1].casefold(),
+                report.score.total if report else -1,
+                report.score.speed if report else -1,
+                report.score.quality if report else -1,
+                report.avg_tokens_per_second if report and report.run_settings.get("tps_source") == "ollama_eval" else -1,
+                values[6].casefold(),
             ]
             self._set_row(self.live_table, row, values, sort_keys=sort_keys, source_index=row)
         self._end_table_update(self.live_table, "live")
+        if selected_name:
+            match = next((index for index, (model, _) in enumerate(self.comparison_rows)
+                          if model.name == selected_name), None)
+            if match is not None:
+                self._select_score_row(match)
 
     def _render_rankings(self) -> None:
+        installed_names = {model.name for model in self.installed_models}
         self.rankings_table.setRowCount(len(USE_CASES))
         for row, use_case in enumerate(USE_CASES):
             ranked = sorted(
                 [report for report in self.live_reports
-                 if report.status == "OK" and (report.run_settings or {}).get("mode") in {"standard", "thinking"}],
+                 if report.model_name in installed_names and report.status == "OK" and
+                 (report.run_settings or {}).get("mode") in {"standard", "thinking"}],
                 key=lambda report: report.score.use_case_scores.get(use_case, 0),
                 reverse=True,
             )
@@ -2505,10 +2417,14 @@ class MainWindow(QMainWindow):
     def show_benchmark_detail(self) -> None:
         report = self._selected_live_report()
         if report is None:
-            self.benchmark_detail.clear()
+            index = self._selected_source_index(self.live_table)
+            if index is not None and index < len(self.comparison_rows):
+                self.benchmark_detail.setPlainText(
+                    f"{self.comparison_rows[index][0].name}\n{tr(self.language, 'benchmark_not_tested')}\n"
+                    f"{tr(self.language, 'benchmark_test_hint')}")
+            else:
+                self.benchmark_detail.clear()
             return
-        index = self._selected_source_index(self.live_table)
-        self.benchmark_chart.set_selected(index)
         resources = report.resource_summary
         run_settings = report.run_settings or {}
         lines = [
@@ -2566,7 +2482,7 @@ class MainWindow(QMainWindow):
         return (f"{float(row['avg_tokens_per_second']):.2f} tok/s"
                 if self._has_measured_tps(row) else tr(self.language, "tps_unmeasured"))
 
-    def _select_chart_report(self, index: int) -> None:
+    def _select_score_row(self, index: int) -> None:
         for row in range(self.live_table.rowCount()):
             item = self.live_table.item(row, 0)
             if item is not None and item.data(SOURCE_INDEX_ROLE) == index:
@@ -2576,9 +2492,9 @@ class MainWindow(QMainWindow):
 
     def _selected_live_report(self) -> BenchmarkReport | None:
         index = self._selected_source_index(self.live_table)
-        if index is not None and 0 <= index < len(self.live_reports):
-            return self.live_reports[index]
-        return self.live_reports[0] if self.live_reports else None
+        if index is not None and 0 <= index < len(self.comparison_rows):
+            return self.comparison_rows[index][1]
+        return None
 
     def _render_recommendations(self) -> None:
         self._begin_table_update(self.recommend_table)
@@ -3159,7 +3075,7 @@ class MainWindow(QMainWindow):
         self.register_opencodex_button.setText(tr(self.language, "register_opencodex"))
         self.connect_codex_button.setText(tr(self.language, "connect_codex"))
         self.smoke_model_button.setText(tr(self.language, "basic_test"))
-        self.chart_title.setText(tr(self.language, "chart_comparison"))
+        self.scores_title.setText(tr(self.language, "benchmark_scores"))
         if not self.connection_status.text():
             self.connection_status.setText(tr(self.language, "connection_hint"))
         self.history_title.setText(tr(self.language, "model_history"))
@@ -3332,7 +3248,7 @@ class MainWindow(QMainWindow):
         widths = {
             "installed": [260, 100, 80, 85, 95, 90, 90, 70, 75, 95, 95, 140, 140],
             "history": [170, 80, 75, 75, 75, 300],
-            "live": [260, 80, 85, 95, 70, 70, 70, 85, 85, 95, 300],
+            "live": [290, 100, 105, 110, 110, 140, 340],
             "rankings": [150, 270, 270, 270],
             "recommend": [60, 230, 350, 90, 80, 95, 95, 70, 230, 95, 360],
             "usage_active": [280, 90, 110, 160, 150],
@@ -3654,6 +3570,12 @@ class MainWindow(QMainWindow):
             }
             QTableWidget::item:selected { background: #1d6687; color: #ffffff; }
             QTableWidget::item:hover { background: #244363; }
+            QScrollBar:horizontal, QScrollBar:vertical { background: #0f1c2e; border: 0; }
+            QScrollBar::handle:horizontal, QScrollBar::handle:vertical {
+                background: #385875; border-radius: 5px; min-width: 32px; min-height: 32px;
+            }
+            QScrollBar::handle:horizontal:hover, QScrollBar::handle:vertical:hover { background: #4a7897; }
+            QScrollBar::add-line, QScrollBar::sub-line { background: none; border: none; }
             QHeaderView::section {
                 background: #1c344e; color: #bfeadd; padding: 8px; border: 0; border-right: 1px solid #2b4961; font-weight: 700;
             }
@@ -3687,6 +3609,7 @@ class MainWindow(QMainWindow):
             QLabel#sectionTitle {
                 background: transparent; color: #e9f4ff; font-size: 15px; font-weight: 700; padding-top: 7px;
             }
+            QLabel#scoreScope { background: transparent; color: #9bb7ce; font-size: 12px; padding-top: 6px; }
             QLabel#processState {
                 background: transparent; color: #70d8ee; font-weight: 700;
             }
