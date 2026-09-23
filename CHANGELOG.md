@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0 - 2026-09-23
+
+- Added selected-model GGUF import, OpenCodex registration, Codex catalog connection, and connection cleanup on Ollama deletion.
+- Added a one-run basic model check, practical-use guidance, and measured generation TPS from Ollama evaluation metrics.
+- Added an interactive benchmark chart and refreshed dark desktop UI.
+- Fixed the Windows package startup failure caused by an incompatible ICU DLL collected from another tool on PATH.
+
 ## 0.1.0 - 2026-06-20
 
 - Added PySide6 desktop UI for installed Ollama models, benchmarks, recommendations, results, and settings.
