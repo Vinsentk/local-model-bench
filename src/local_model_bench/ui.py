@@ -508,6 +508,7 @@ class MainWindow(QMainWindow):
         self.run_all_completed = 0
         self.benchmark_active = False
         self.benchmark_failed = False
+        self.active_benchmark_mode = "standard"
         self.benchmark_total_steps = 0
         self.benchmark_seen_steps: set[str] = set()
 
@@ -1462,10 +1463,15 @@ class MainWindow(QMainWindow):
         self._start_worker(worker)
 
     def _on_progress(self, text: str) -> None:
-        self.current_case_value.setText(text)
-        self.current_case_value.setToolTip(text)
-        self._mark_benchmark_step(text)
-        self._append_log(text)
+        model_name, separator, case = text.rpartition(": ")
+        case = case if separator else text
+        case = re.sub(r"^smoke(?=\s|$)", tr(self.language, "case_basic_response"), case, count=1)
+        display = f"{self.active_benchmark_mode.upper()} · {case}"
+        detail = f"{model_name}: {display}" if separator else display
+        self.current_case_value.setText(display)
+        self.current_case_value.setToolTip(detail)
+        self._mark_benchmark_step(text, detail)
+        self._append_log(detail)
 
     def _on_report(self, report: BenchmarkReport) -> None:
         if self.benchmark_active:
@@ -2602,6 +2608,7 @@ class MainWindow(QMainWindow):
             self._set_process_stage("canceled", error.splitlines()[-1][:180], self.process_progress.value())
 
     def _start_benchmark_process(self, models: list[OllamaModel], mode: str, label: str) -> None:
+        self.active_benchmark_mode = mode
         warmup_runs = self.warmup_spin.value()
         repeat_count = self.repeat_spin.value()
         case_count = self._benchmark_case_count(mode)
@@ -2623,7 +2630,7 @@ class MainWindow(QMainWindow):
         )
         self._set_process_stage("queue", tr(self.language, "process_queue"), 5)
 
-    def _mark_benchmark_step(self, text: str) -> None:
+    def _mark_benchmark_step(self, text: str, display: str | None = None) -> None:
         if not self.benchmark_active:
             return
         if text not in self.benchmark_seen_steps:
@@ -2631,7 +2638,7 @@ class MainWindow(QMainWindow):
         stage_key = "warmup" if "warmup" in text.lower() else "cases"
         completed_ratio = min(1.0, len(self.benchmark_seen_steps) / max(1, self.benchmark_total_steps))
         percent = 10 + int(completed_ratio * 72)
-        self._set_process_stage(stage_key, text, percent)
+        self._set_process_stage(stage_key, display or text, percent)
 
     def _finish_benchmark_process(self) -> None:
         if not self.benchmark_active:
@@ -2645,6 +2652,7 @@ class MainWindow(QMainWindow):
         self._set_benchmark_buttons_running(False)
 
     def _set_benchmark_buttons_running(self, running: bool) -> None:
+        self.mode_combo.setEnabled(not running)
         self.run_selected_button.setEnabled(not running)
         self.run_all_button.setEnabled(not running)
         self.retry_needed_button.setEnabled(not running)

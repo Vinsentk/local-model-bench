@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 - 2026-09-23
+
+- Clarify that Standard and Thinking benchmarks begin with a basic response check; progress now shows the selected run mode separately from the current case.
+- Keep the mode selector fixed during a running benchmark so its visible value matches the active run.
+
 ## 0.2.1 - 2026-09-23
 
 - Show every installed Ollama model in the benchmark comparison, including models without a benchmark result.

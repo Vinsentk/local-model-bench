@@ -50,3 +50,35 @@ def test_benchmark_shows_every_installed_model_and_a_scrollable_table(tmp_path, 
         assert "test-model-12:latest" in window.benchmark_detail.toPlainText()
     finally:
         window.close()
+
+
+def test_standard_progress_shows_mode_and_basic_case_separately(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setattr(MainWindow, "_load_settings", lambda self: {
+        "storage_path": str(tmp_path / "results.sqlite"), "language": "ko",
+    })
+    for method in ("refresh_installed", "refresh_results", "refresh_usage",
+                   "_enrich_installed_hf_metadata"):
+        monkeypatch.setattr(MainWindow, method, lambda self, *_args: None)
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        model = OllamaModel("qwen3:27b")
+        window.mode_combo.setCurrentText("standard")
+        window._start_benchmark_process([model], "standard", "벤치마크")
+        assert not window.mode_combo.isEnabled()
+        window.mode_combo.setCurrentText("smoke")  # An in-flight run keeps its selected mode.
+        window._on_progress("qwen3:27b: smoke (600s)")
+
+        assert window.active_benchmark_mode == "standard"
+        assert window.current_case_value.text() == "STANDARD · 기초 응답 확인 (600s)"
+        assert "qwen3:27b: STANDARD · 기초 응답 확인 (600s)" == window.process_state_label.text()
+        assert "standard" in window.process_plan_label.text()
+        assert "smoke" not in window.current_case_value.text().lower()
+        assert "qwen3:27b: smoke (600s)" in window.benchmark_seen_steps
+
+        window._on_progress("qwen3:27b: json (600s)")
+        assert window.current_case_value.text() == "STANDARD · json (600s)"
+    finally:
+        window.close()

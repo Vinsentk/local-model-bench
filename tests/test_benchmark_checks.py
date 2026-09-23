@@ -83,3 +83,15 @@ def test_benchmark_warmup_and_repeats_are_recorded() -> None:
     assert {call["keep_alive"] for call in client.calls} == {"2m"}
     assert report.cases[0].prompt_tokens_per_second == 20.0
     assert report.cases[0].load_seconds == 0.3
+
+
+def test_standard_run_keeps_mode_and_runs_all_six_cases() -> None:
+    client = FakeClient()
+    bench = BenchmarkRunner(client=client, hardware=HardwareInfo("cpu", 1, 1, 16, "gpu", 8, "C:\\", 10))
+
+    report = bench.run(OllamaModel("qwen3:27b"), mode="standard", warmup_runs=0, repeat_count=1)
+
+    assert report.run_settings["mode"] == "standard"
+    assert [case.name for case in report.cases] == ["smoke", "json", "code", "review", "korean", "reasoning"]
+    assert len(client.calls) == 6
+    assert {call["timeout_seconds"] for call in client.calls} == {600}
