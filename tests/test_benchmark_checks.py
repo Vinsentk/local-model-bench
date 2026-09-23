@@ -79,6 +79,7 @@ def test_benchmark_warmup_and_repeats_are_recorded() -> None:
     assert len(report.cases) == 2
     assert report.run_settings["warmup_runs"] == 1
     assert report.run_settings["repeat_count"] == 2
+    assert report.run_settings["tps_source"] == "ollama_eval"
     assert {call["keep_alive"] for call in client.calls} == {"2m"}
     assert report.cases[0].prompt_tokens_per_second == 20.0
     assert report.cases[0].load_seconds == 0.3

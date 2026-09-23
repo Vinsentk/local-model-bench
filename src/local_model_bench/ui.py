@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QRectF, QThreadPool, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen
+from PySide6.QtGui import QBrush, QColor, QIcon, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMainWindow,
@@ -48,7 +49,8 @@ from .hardware import HardwareProbe
 from . import __version__
 from .hf_search import HuggingFaceSearch
 from .i18n import LANGUAGES, USE_CASES, format_use_cases, tr, use_case_label
-from .models import BenchmarkReport, ModelRecommendation, OllamaModel
+from .models import BenchmarkCaseResult, BenchmarkReport, ModelRecommendation, OllamaModel, ScoreBreakdown
+from .model_connections import connect_codex, delete_connected_model, register_opencodex
 from .ollama_logs import OllamaLogImporter
 from .ollama_client import OllamaClient
 from .opencode_logs import OpenCodeLogImporter
@@ -103,6 +105,29 @@ TABLE_HEADERS = {
         "First token",
     ],
     "results_tail": ["Last Tested", "Error"],
+}
+
+FIT_EXPLANATIONS = {
+    "en": {
+        "fast_draft": "Short drafts and quick replies; based on measured speed.",
+        "coding_assistant": "Small code edits; tool use and full agent work are unverified.",
+        "code_review": "Basic bug spotting; complex reviews need more tests.",
+        "long_analysis": "Simple multistep reasoning; long context is unverified.",
+        "korean_summary": "Short Korean summaries.",
+        "low_resource_fast": "Light local tasks with a favorable memory fit.",
+        "high_quality_slow": "Quality-focused single responses where latency is acceptable.",
+        "needs_more_tests": "Only a basic run was checked. Run Standard/Thinking to judge practical uses.",
+    },
+    "ko": {
+        "fast_draft": "짧은 초안·빠른 응답. 측정된 생성 속도 기반.",
+        "coding_assistant": "작은 코드 수정 보조. 도구 호출·에이전트 작업은 별도 검증 필요.",
+        "code_review": "기초 버그 찾기. 복잡한 리뷰는 추가 검증 필요.",
+        "long_analysis": "간단한 다단계 추론. 긴 문맥은 별도 검증 필요.",
+        "korean_summary": "짧은 한국어 요약.",
+        "low_resource_fast": "메모리 부담이 적은 로컬 작업.",
+        "high_quality_slow": "응답 시간이 길어도 되는 단일 답변 작업.",
+        "needs_more_tests": "기초 실행만 확인했습니다. 용도 판단에는 표준·추론 벤치가 필요합니다.",
+    },
 }
 
 TABLE_HEADER_TRANSLATIONS = {
@@ -330,6 +355,109 @@ class SortTableWidgetItem(QTableWidgetItem):
         return super().__lt__(other)
 
 
+class BenchmarkChart(QWidget):
+    """Small interactive chart backed by the current benchmark reports."""
+
+    reportSelected = Signal(int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("benchmarkChart")
+        self.setMinimumHeight(220)
+        self.setMouseTracking(True)
+        self.reports: list[BenchmarkReport] = []
+        self.chart_metric_key = "score"
+        self.selected_index: int | None = None
+        self._bars: list[tuple[QRectF, int]] = []
+
+    def set_reports(self, reports: list[BenchmarkReport]) -> None:
+        self.reports = reports[:8]
+        self.update()
+
+    def set_metric(self, metric: str) -> None:
+        self.chart_metric_key = metric
+        self.update()
+
+    def set_selected(self, index: int | None) -> None:
+        self.selected_index = index
+        self.update()
+
+    def _value(self, report: BenchmarkReport) -> float:
+        if self.chart_metric_key == "tps":
+            return max(0.0, report.avg_tokens_per_second) if report.run_settings.get("tps_source") == "ollama_eval" else 0.0
+        if self.chart_metric_key == "vram":
+            return max(0.0, float(report.resource_summary.get("vram_used_gb_peak", 0) or 0))
+        return max(0.0, report.score.total)
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        outer = QRectF(1, 1, self.width() - 2, self.height() - 2)
+        painter.setPen(QPen(QColor("#2a4963"), 1))
+        painter.setBrush(QColor("#13263c"))
+        painter.drawRoundedRect(outer, 12, 12)
+        self._bars = []
+        if not self.reports:
+            painter.setPen(QColor("#9cb5ce"))
+            painter.drawText(outer, Qt.AlignmentFlag.AlignCenter, "Run a benchmark to see model comparisons")
+            return
+        left, right, top, bottom = 44.0, 20.0, 30.0, 48.0
+        chart_height = max(1.0, self.height() - top - bottom)
+        chart_width = max(1.0, self.width() - left - right)
+        values = [self._value(report) for report in self.reports]
+        scale = 100.0 if self.chart_metric_key == "score" else max(1.0, max(values) * 1.15)
+        for fraction in (0.0, .5, 1.0):
+            y = top + chart_height * (1 - fraction)
+            painter.setPen(QPen(QColor("#2d4560"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(int(left), int(y), int(self.width() - right), int(y))
+            painter.setPen(QColor("#91aac4"))
+            painter.drawText(7, int(y) + 4, f"{scale * fraction:g}")
+        slot = chart_width / len(self.reports)
+        bar_width = min(86.0, slot * .58)
+        accent = {"score": ("#2bd6bb", "#1b8e8d"), "tps": ("#5eb9ff", "#2369a8"),
+                  "vram": ("#f6c26b", "#a86c3d")}[self.chart_metric_key]
+        for index, (report, value) in enumerate(zip(self.reports, values)):
+            height = max(3.0, chart_height * min(1.0, value / scale)) if value else 3.0
+            x = left + index * slot + (slot - bar_width) / 2
+            rect = QRectF(x, top + chart_height - height, bar_width, height)
+            gradient = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            colors = accent if report.status == "OK" else (("#eeb36b", "#a55b46") if report.status == "PARTIAL" else ("#e77a87", "#8c3a58"))
+            gradient.setColorAt(0, QColor(colors[0]))
+            gradient.setColorAt(1, QColor(colors[1]))
+            painter.setBrush(QBrush(gradient))
+            painter.setPen(QPen(QColor("#e4fcff" if self.selected_index == index else colors[1]),
+                                2 if self.selected_index == index else 1))
+            painter.drawRoundedRect(rect, 6, 6)
+            painter.setPen(QColor("#ecf7ff"))
+            suffix = "" if self.chart_metric_key == "score" else " TPS" if self.chart_metric_key == "tps" else " GB"
+            value_label = "—" if self.chart_metric_key == "tps" and value <= 0 else f"{value:.1f}{suffix}"
+            painter.drawText(QRectF(x - 10, rect.top() - 24, bar_width + 20, 20),
+                             Qt.AlignmentFlag.AlignCenter, value_label)
+            label = painter.fontMetrics().elidedText(report.model_name, Qt.TextElideMode.ElideMiddle,
+                                                      max(48, int(slot - 8)))
+            painter.setPen(QColor("#b6cce3"))
+            painter.drawText(QRectF(left + index * slot, self.height() - 38, slot, 28),
+                             Qt.AlignmentFlag.AlignCenter, label)
+            self._bars.append((QRectF(left + index * slot, top, slot, chart_height + 36), index))
+
+    def mouseMoveEvent(self, event) -> None:
+        index = next((index for rect, index in self._bars if rect.contains(event.position())), None)
+        if index is None:
+            self.setToolTip("")
+            return
+        report = self.reports[index]
+        measured_tps = (report.avg_tokens_per_second if report.run_settings.get("tps_source") == "ollama_eval" else 0)
+        self.setToolTip(f"{report.model_name}\nStatus: {report.status}\nScore: {report.score.total}"
+                        f"\nGeneration TPS: {measured_tps or 'unmeasured'}"
+                        f"\nVRAM peak: {report.resource_summary.get('vram_used_gb_peak', 'unmeasured')} GB")
+
+    def mousePressEvent(self, event) -> None:
+        index = next((index for rect, index in self._bars if rect.contains(event.position())), None)
+        if index is not None:
+            self.set_selected(index)
+            self.reportSelected.emit(index)
+
+
 class RangeSlider(QWidget):
     rangeChanged = Signal(int, int)
 
@@ -496,6 +624,7 @@ class MainWindow(QMainWindow):
         self._build_results_tab()
         self._build_usage_tab()
         self._build_settings_tab()
+        self._load_recent_benchmarks()
         self._apply_language()
         self.usage_timer = QTimer(self)
         self.usage_timer.setInterval(30_000)
@@ -504,6 +633,42 @@ class MainWindow(QMainWindow):
         self.refresh_installed()
         self.refresh_results()
         self.refresh_usage()
+
+    def _load_recent_benchmarks(self) -> None:
+        """Show saved model comparisons immediately, before a new run is started."""
+        reports: list[BenchmarkReport] = []
+        for row in self.store.latest_report_per_model(limit=30, include_deleted=False):
+            try:
+                status = str(row.get("status", ""))
+                settings = row.get("run_settings") or {}
+                mode = settings.get("mode")
+                measured_tps = settings.get("tps_source") == "ollama_eval"
+                score = ScoreBreakdown(
+                    total=float(row.get("total_score") or 0), quality=float(row.get("quality") or 0),
+                    speed=float(row.get("speed") or 0), stability=float(row.get("stability") or 0),
+                    resource_fit=float(row.get("resource_fit") or 0), usability=float(row.get("usability") or 0),
+                    use_case_scores=(row.get("use_case_scores") or {}) if status == "OK" and mode != "smoke" else {},
+                    recommended_uses=(row.get("recommended_uses") or []) if status == "OK" and mode != "smoke" else ["needs_more_tests"],
+                )
+                cases = [BenchmarkCaseResult(**(case if measured_tps else {**case, "tokens_per_second": 0,
+                                                                           "prompt_tokens_per_second": 0}))
+                         for case in row.get("cases", [])]
+                reports.append(BenchmarkReport(
+                    model_name=row["model_name"], source=row.get("source", "Installed"),
+                    size_label=row.get("size_label", ""), quant=row.get("quant", ""),
+                    status=status, cases=cases, score=score,
+                    avg_tokens_per_second=float(row.get("avg_tokens_per_second") or 0) if measured_tps else 0.0,
+                    started_at=row.get("started_at", ""), finished_at=row.get("finished_at", ""),
+                    error=row.get("error", ""), resource_summary=row.get("resource_summary") or {},
+                    run_settings=settings,
+                ))
+            except (KeyError, TypeError, ValueError):
+                continue
+        self.live_reports = reports
+        self._render_live_reports()
+        self._render_rankings()
+        if reports:
+            self.live_table.setCurrentCell(0, 0)
 
     def _build_installed_tab(self) -> None:
         page = QWidget()
@@ -521,10 +686,33 @@ class MainWindow(QMainWindow):
         self.refresh_installed_button = QPushButton()
         self.refresh_installed_button.clicked.connect(self.refresh_installed)
         self.delete_model_button = QPushButton()
+        self.delete_model_button.setObjectName("dangerAction")
         self.delete_model_button.clicked.connect(self.delete_selected_model)
         controls.addWidget(self.refresh_installed_button)
         controls.addWidget(self.delete_model_button)
         controls.addStretch()
+
+        connections = QHBoxLayout()
+        self.register_ollama_button = QPushButton()
+        self.register_ollama_button.setObjectName("secondaryAction")
+        self.register_ollama_button.clicked.connect(self.register_gguf_with_ollama)
+        self.register_opencodex_button = QPushButton()
+        self.register_opencodex_button.setObjectName("secondaryAction")
+        self.register_opencodex_button.clicked.connect(self.register_selected_opencodex)
+        self.connect_codex_button = QPushButton()
+        self.connect_codex_button.setObjectName("secondaryAction")
+        self.connect_codex_button.clicked.connect(self.connect_selected_codex)
+        self.smoke_model_button = QPushButton()
+        self.smoke_model_button.setObjectName("secondaryAction")
+        self.smoke_model_button.clicked.connect(self.smoke_selected_model)
+        for button in (self.register_ollama_button, self.register_opencodex_button,
+                       self.connect_codex_button, self.smoke_model_button):
+            connections.addWidget(button)
+        connections.addStretch()
+        self.connection_status = QLabel()
+        self.connection_status.setObjectName("connectionStatus")
+        self.connection_status.setWordWrap(True)
+        self.connection_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
         self.history_title = QLabel()
         self.history_title.setObjectName("sectionTitle")
@@ -533,6 +721,8 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.hardware_label)
         layout.addLayout(controls)
+        layout.addLayout(connections)
+        layout.addWidget(self.connection_status)
         layout.addWidget(self.installed_table, stretch=3)
         layout.addWidget(self.history_title)
         layout.addWidget(self.history_table, stretch=2)
@@ -611,6 +801,21 @@ class MainWindow(QMainWindow):
         self.ram_title, self.ram_value = self._score_card(resource_panel, 0, 2)
         self.vram_title, self.vram_value = self._score_card(resource_panel, 0, 3)
 
+        chart_header = QHBoxLayout()
+        self.chart_title = QLabel()
+        self.chart_title.setObjectName("sectionTitle")
+        self.chart_metric = QComboBox()
+        self.chart_metric.addItem("Score", "score")
+        self.chart_metric.addItem("Generation TPS", "tps")
+        self.chart_metric.addItem("VRAM peak", "vram")
+        self.chart_metric.currentIndexChanged.connect(
+            lambda _: self.benchmark_chart.set_metric(self.chart_metric.currentData()))
+        chart_header.addWidget(self.chart_title)
+        chart_header.addStretch()
+        chart_header.addWidget(self.chart_metric)
+        self.benchmark_chart = BenchmarkChart()
+        self.benchmark_chart.reportSelected.connect(self._select_chart_report)
+
         self.live_table = QTableWidget(0, 11)
         self._setup_table(self.live_table, "live")
         self.live_table.itemSelectionChanged.connect(self.show_benchmark_detail)
@@ -642,6 +847,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(process_frame)
         layout.addLayout(score_panel)
         layout.addLayout(resource_panel)
+        layout.addLayout(chart_header)
+        layout.addWidget(self.benchmark_chart)
         layout.addWidget(self.live_table, stretch=3)
         layout.addLayout(lower, stretch=2)
         layout.addWidget(self.progress_log, stretch=1)
@@ -1077,7 +1284,7 @@ class MainWindow(QMainWindow):
             latest = latest_reports.get(model.name, {})
             last_status = latest.get("status", "-")
             total = latest.get("total_score", "-")
-            speed = latest.get("avg_tokens_per_second", "-")
+            speed = self._row_tps(latest)
             last_tested = self._format_local_time(latest.get("finished_at", ""))
             usage_key = self._usage_model_key(model.name)
             tokens_1d = usage_1d.get(usage_key, 0)
@@ -1159,16 +1366,72 @@ class MainWindow(QMainWindow):
     def delete_selected_model(self) -> None:
         model = self._selected_installed_model()
         if model is None:
+            self.connection_status.setText(tr(self.language, "select_model_first"))
             return
-        ok = QMessageBox.question(self, tr(self.language, "delete_title"), f"{tr(self.language, 'delete_body')}\n\n{model.name}")
+        ok = QMessageBox.question(self, tr(self.language, "delete_title"),
+                                  f"{tr(self.language, 'delete_connections_body')}\n\n{model.name}")
         if ok != QMessageBox.StandardButton.Yes:
             return
-        self._append_log(f"ollama rm: {model.name}")
-        self._run_background(lambda: self.client.delete(model.name), self._after_delete)
+        self._run_model_action(lambda: delete_connected_model(model.name, self.client), self._after_delete)
 
-    def _after_delete(self, _result) -> None:
-        self._append_log(tr(self.language, "delete_finished"))
+    def _after_delete(self, result: str) -> None:
+        self.connection_status.setText(result)
+        self._append_log(result)
         self.refresh_installed()
+
+    def register_gguf_with_ollama(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, tr(self.language, "register_ollama"), "", "GGUF (*.gguf)")
+        if not path:
+            return
+        default_name = re.sub(r"[^a-z0-9_.-]+", "-", Path(path).stem.lower()).strip("-.")[:80]
+        name, accepted = QInputDialog.getText(self, tr(self.language, "register_ollama"),
+                                              tr(self.language, "ollama_name_prompt"), text=default_name)
+        if accepted and name.strip():
+            self._run_model_action(lambda: self.client.create_from_gguf(path, name.strip()),
+                                   lambda _: self._after_ollama_registration(name.strip()))
+
+    def _after_ollama_registration(self, name: str) -> None:
+        self.connection_status.setText(f"Ollama registered: {name}. Run the basic test before connecting it.")
+        self.refresh_installed()
+
+    def register_selected_opencodex(self) -> None:
+        model = self._selected_installed_model()
+        if model is None:
+            self.connection_status.setText(tr(self.language, "select_model_first"))
+            return
+        self._run_model_action(lambda: register_opencodex(model.name, self.client), self.connection_status.setText)
+
+    def connect_selected_codex(self) -> None:
+        model = self._selected_installed_model()
+        if model is None:
+            self.connection_status.setText(tr(self.language, "select_model_first"))
+            return
+        self._run_model_action(lambda: connect_codex(model.name, self.client), self.connection_status.setText)
+
+    def smoke_selected_model(self) -> None:
+        model = self._selected_installed_model()
+        if model is None:
+            self.connection_status.setText(tr(self.language, "select_model_first"))
+            return
+        if self.benchmark_active:
+            self.connection_status.setText(tr(self.language, "benchmark_running"))
+            return
+        self.mode_combo.setCurrentText("smoke")
+        self.connection_status.setText(f"{model.name}: basic test running...")
+        self._run_benchmark(model, basic=True)
+        self.tabs.setCurrentIndex(1)
+
+    def _run_model_action(self, fn, on_result) -> None:
+        buttons = (self.register_ollama_button, self.register_opencodex_button,
+                   self.connect_codex_button, self.delete_model_button)
+        for button in buttons:
+            button.setEnabled(False)
+        self.connection_status.setText(tr(self.language, "connection_working"))
+        worker = Worker(fn)
+        worker.signals.result.connect(on_result)
+        worker.signals.error.connect(lambda error: self.connection_status.setText(error.strip().splitlines()[-1]))
+        worker.signals.finished.connect(lambda: [button.setEnabled(True) for button in buttons])
+        self._start_worker(worker)
 
     def show_selected_model_history(self) -> None:
         model = self._selected_installed_model()
@@ -1190,7 +1453,7 @@ class MainWindow(QMainWindow):
         index = self._selected_source_index(self.installed_table)
         if index is not None and 0 <= index < len(self.installed_models):
             return self.installed_models[index]
-        return self.installed_models[0] if self.installed_models else None
+        return None
 
     def run_selected_benchmark(self) -> None:
         name = self.model_combo.currentText()
@@ -1269,7 +1532,7 @@ class MainWindow(QMainWindow):
         self.cancel_requested = True
         self._append_log(tr(self.language, "stop_requested"))
 
-    def _run_benchmark(self, model: OllamaModel) -> None:
+    def _run_benchmark(self, model: OllamaModel, *, basic: bool = False) -> None:
         mode = self.mode_combo.currentText()
         self.run_all_active = False
         self.run_all_total = 1
@@ -1283,8 +1546,8 @@ class MainWindow(QMainWindow):
             return runner.run(
                 model,
                 mode=mode,
-                warmup_runs=self.warmup_spin.value(),
-                repeat_count=self.repeat_spin.value(),
+                warmup_runs=0 if basic else self.warmup_spin.value(),
+                repeat_count=1 if basic else self.repeat_spin.value(),
                 on_progress=lambda m, c: worker.signals.progress.emit(f"{m}: {c}"),  # type: ignore[union-attr]
                 on_usage=self._record_usage_event,
             )
@@ -1320,7 +1583,11 @@ class MainWindow(QMainWindow):
         self._render_rankings()
         self.show_benchmark_detail()
         progress = f" [{self._run_progress_text()}]" if self.run_all_total > 0 else ""
-        self._append_log(f"{report.model_name}: {report.status}, score {report.score.total}, {report.avg_tokens_per_second} tok/s{progress}")
+        self._append_log(f"{report.model_name}: {report.status}, score {report.score.total}, {self._report_tps(report)}{progress}")
+        if (report.run_settings or {}).get("mode") == "smoke":
+            passed = report.status == "OK" and bool(report.cases) and all(case.passed for case in report.cases)
+            verdict = tr(self.language, "basic_test_pass") if passed else tr(self.language, "basic_test_fail")
+            self.connection_status.setText(f"{report.model_name}: {verdict} | {self._report_tps(report)}")
         self.refresh_results()
         self._render_installed_models(reset_combo=False)
 
@@ -1542,7 +1809,7 @@ class MainWindow(QMainWindow):
 
         def work():
             for name in installed:
-                self.client.delete(name)
+                delete_connected_model(name, self.client)
             return installed
 
         self._run_background(work, self._after_delete_downloaded)
@@ -1604,7 +1871,7 @@ class MainWindow(QMainWindow):
                 item.get("stability", ""),
                 item.get("resource_fit", ""),
                 self._format_use_list(item.get("recommended_uses", [])),
-                item.get("avg_tokens_per_second", ""),
+                self._row_tps(item),
                 item.get("avg_first_token_seconds", ""),
             ]
             values.extend([use_scores.get(key, "") for key in USE_CASES])
@@ -1631,7 +1898,7 @@ class MainWindow(QMainWindow):
                 self._number_or_zero(item.get("stability", 0)),
                 self._number_or_zero(item.get("resource_fit", 0)),
                 self._format_use_list(item.get("recommended_uses", [])).casefold(),
-                self._number_or_zero(item.get("avg_tokens_per_second", 0)),
+                self._number_or_zero(item.get("avg_tokens_per_second", 0)) if self._has_measured_tps(item) else 0,
                 self._number_or_zero(item.get("avg_first_token_seconds", 0)),
             ]
             sort_keys.extend(self._number_or_zero(use_scores.get(key, 0)) for key in USE_CASES)
@@ -2031,7 +2298,7 @@ class MainWindow(QMainWindow):
         lines = [
             f"{tr(self.language, 'model')}: {model_name}",
             f"{tr(self.language, 'last_score')}: {item.get('total_score', '-')}",
-            f"{tr(self.language, 'speed')}: {item.get('avg_tokens_per_second', '-')} tok/s",
+            f"{tr(self.language, 'speed')}: {self._row_tps(item)}",
             f"{tr(self.language, 'quality')}: {item.get('quality', '-')}",
             f"{tr(self.language, 'best_uses')}: {self._format_use_list(item.get('recommended_uses', []))}",
             "",
@@ -2183,6 +2450,7 @@ class MainWindow(QMainWindow):
             self._append_log(tr(self.language, "endpoint_not_found"))
 
     def _render_live_reports(self) -> None:
+        self.benchmark_chart.set_reports(self.live_reports)
         self._begin_table_update(self.live_table)
         self.live_table.setRowCount(len(self.live_reports))
         for row, report in enumerate(self.live_reports):
@@ -2220,7 +2488,8 @@ class MainWindow(QMainWindow):
         self.rankings_table.setRowCount(len(USE_CASES))
         for row, use_case in enumerate(USE_CASES):
             ranked = sorted(
-                self.live_reports,
+                [report for report in self.live_reports
+                 if report.status == "OK" and (report.run_settings or {}).get("mode") in {"standard", "thinking"}],
                 key=lambda report: report.score.use_case_scores.get(use_case, 0),
                 reverse=True,
             )
@@ -2238,6 +2507,8 @@ class MainWindow(QMainWindow):
         if report is None:
             self.benchmark_detail.clear()
             return
+        index = self._selected_source_index(self.live_table)
+        self.benchmark_chart.set_selected(index)
         resources = report.resource_summary
         run_settings = report.run_settings or {}
         lines = [
@@ -2248,6 +2519,9 @@ class MainWindow(QMainWindow):
             f"Thinking evidence: {self._thinking_evidence_for_model(report.model_name) or '-'}",
             f"Total: {report.score.total} | Speed: {report.score.speed} | Quality: {report.score.quality}",
             f"Best uses: {self._format_use_list(report.score.recommended_uses)}",
+            "Practical fit (basic benchmarks only):",
+            *[f"- {use_case_label(key, self.language)}: {FIT_EXPLANATIONS.get(self.language, FIT_EXPLANATIONS['en']).get(key, FIT_EXPLANATIONS['en'].get(key, ''))}"
+              for key in report.score.recommended_uses],
             "",
             "Benchmark settings:",
             f"- Mode: {run_settings.get('mode', '-')}",
@@ -2256,7 +2530,7 @@ class MainWindow(QMainWindow):
             f"- Timeout: {run_settings.get('timeout_seconds', '-')}s",
             "",
             "Timing summary:",
-            f"- Output generation: {report.avg_tokens_per_second} tok/s",
+            f"- Output generation: {self._report_tps(report)}",
             f"- Prompt processing: {self._avg_case_value(report.cases, 'prompt_tokens_per_second')} tok/s",
             f"- Model load: {self._avg_case_value(report.cases, 'load_seconds')}s",
             "",
@@ -2271,12 +2545,34 @@ class MainWindow(QMainWindow):
         for case in report.cases:
             lines.append(
                 f"- {case.name}: {'OK' if case.passed else 'FAIL'} | score {case.score} | "
-                f"{round(case.tokens_per_second, 2)} tok/s | prompt {round(case.prompt_tokens_per_second, 2)} tok/s | "
+                f"{f'{case.tokens_per_second:.2f} tok/s' if case.tokens_per_second > 0 else tr(self.language, 'tps_unmeasured')} | prompt {round(case.prompt_tokens_per_second, 2)} tok/s | "
                 f"load {round(case.load_seconds, 2)}s | first token {round(case.first_token_seconds, 2)}s"
             )
             if case.error:
                 lines.append(f"  error: {case.error}")
         self.benchmark_detail.setPlainText("\n".join(lines))
+
+    def _report_tps(self, report: BenchmarkReport) -> str:
+        return (f"{report.avg_tokens_per_second:.2f} tok/s"
+                if report.run_settings.get("tps_source") == "ollama_eval" and
+                any(case.tokens_per_second > 0 for case in report.cases)
+                else tr(self.language, "tps_unmeasured"))
+
+    @staticmethod
+    def _has_measured_tps(row: dict) -> bool:
+        return (row.get("run_settings") or {}).get("tps_source") == "ollama_eval" and float(row.get("avg_tokens_per_second") or 0) > 0
+
+    def _row_tps(self, row: dict) -> str:
+        return (f"{float(row['avg_tokens_per_second']):.2f} tok/s"
+                if self._has_measured_tps(row) else tr(self.language, "tps_unmeasured"))
+
+    def _select_chart_report(self, index: int) -> None:
+        for row in range(self.live_table.rowCount()):
+            item = self.live_table.item(row, 0)
+            if item is not None and item.data(SOURCE_INDEX_ROLE) == index:
+                self.live_table.setCurrentCell(row, 0)
+                self.show_benchmark_detail()
+                break
 
     def _selected_live_report(self) -> BenchmarkReport | None:
         index = self._selected_source_index(self.live_table)
@@ -2353,7 +2649,7 @@ class MainWindow(QMainWindow):
         self.current_case_value.setText(self._short(report.model_name, 48))
         self.current_case_value.setToolTip(report.model_name)
         self.last_score_value.setText(f"{report.score.total}/100")
-        self.speed_value.setText(f"{report.score.speed} | {report.avg_tokens_per_second} tok/s")
+        self.speed_value.setText(f"{report.score.speed} | {self._report_tps(report)}")
         self.quality_value.setText(str(report.score.quality))
         self.best_uses_value.setText(self._format_use_list(report.score.recommended_uses))
 
@@ -2674,7 +2970,7 @@ class MainWindow(QMainWindow):
             return []
         ranked = sorted(rows, key=lambda row: self._number_or_zero(row.get("total_score", 0)), reverse=True)
         return [
-            f"- {row.get('model_name', '')} | {row.get('quant') or '-'} | {row.get('total_score', '-')} | {row.get('avg_tokens_per_second', '-')} tok/s"
+            f"- {row.get('model_name', '')} | {row.get('quant') or '-'} | {row.get('total_score', '-')} | {self._row_tps(row)}"
             for row in ranked[:8]
         ]
 
@@ -2859,6 +3155,13 @@ class MainWindow(QMainWindow):
         self.tabs.setTabText(5, tr(self.language, "settings"))
         self.refresh_installed_button.setText(tr(self.language, "refresh_installed"))
         self.delete_model_button.setText(tr(self.language, "delete_model"))
+        self.register_ollama_button.setText(tr(self.language, "register_ollama"))
+        self.register_opencodex_button.setText(tr(self.language, "register_opencodex"))
+        self.connect_codex_button.setText(tr(self.language, "connect_codex"))
+        self.smoke_model_button.setText(tr(self.language, "basic_test"))
+        self.chart_title.setText(tr(self.language, "chart_comparison"))
+        if not self.connection_status.text():
+            self.connection_status.setText(tr(self.language, "connection_hint"))
         self.history_title.setText(tr(self.language, "model_history"))
         self.model_label.setText(tr(self.language, "model"))
         self.mode_label.setText(tr(self.language, "mode"))
@@ -3321,67 +3624,82 @@ class MainWindow(QMainWindow):
     def _apply_style(self) -> None:
         self.setStyleSheet(
             """
-            QWidget { background: #f5f7fa; color: #17202a; font-size: 13px; }
-            QTabWidget::pane { border: 1px solid #d8dee6; background: #f5f7fa; }
+            QWidget { background: #0b1220; color: #e8f1ff; font-size: 13px; font-family: 'Malgun Gothic', 'Segoe UI'; }
+            QTabWidget::pane { border: 1px solid #253650; background: #0b1220; border-radius: 10px; }
             QTabBar::tab {
-                background: #e9edf2; border: 1px solid #d8dee6; padding: 9px 14px;
-                margin-right: 2px; border-top-left-radius: 6px; border-top-right-radius: 6px;
+                background: #152137; color: #9fb3ce; border: 1px solid #253650; padding: 11px 18px;
+                margin-right: 4px; border-top-left-radius: 9px; border-top-right-radius: 9px;
             }
-            QTabBar::tab:selected { background: #ffffff; color: #0f5f8f; font-weight: 600; }
+            QTabBar::tab:hover { background: #1d304d; color: #e8f1ff; }
+            QTabBar::tab:selected { background: #203a59; color: #74e2d2; font-weight: 700; border-bottom: 2px solid #29c4b3; }
             QPushButton {
-                background: #1f6feb; color: #ffffff; border: 0; border-radius: 6px;
-                padding: 8px 12px; font-weight: 600;
+                background: #1769b7; color: #ffffff; border: 1px solid #3386cf; border-radius: 8px;
+                padding: 9px 14px; font-weight: 650;
             }
-            QPushButton:hover { background: #185abc; }
+            QPushButton:hover { background: #2387db; }
+            QPushButton:pressed { background: #0f4d89; }
+            QPushButton:disabled { background: #27354a; color: #798aa3; border-color: #33455d; }
+            QPushButton#secondaryAction { background: #183344; color: #90f0e2; border-color: #2c6870; }
+            QPushButton#secondaryAction:hover { background: #245461; }
+            QPushButton#dangerAction { background: #553042; color: #ffd8df; border-color: #a45b70; }
+            QPushButton#dangerAction:hover { background: #783d53; }
             QLineEdit, QComboBox, QSpinBox, QTextEdit {
-                background: #ffffff; border: 1px solid #cfd7df; border-radius: 6px; padding: 7px;
+                background: #111e31; color: #e8f1ff; border: 1px solid #344961; border-radius: 8px; padding: 8px;
             }
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QTextEdit:focus { border-color: #29c4b3; }
+            QComboBox QAbstractItemView { background: #17273d; color: #e8f1ff; selection-background-color: #21678d; }
             QTableWidget {
-                background: #ffffff; alternate-background-color: #f1f7f5; gridline-color: #e1e6ec;
-                border: 1px solid #d8dee6; border-radius: 6px;
+                background: #111d2f; alternate-background-color: #17263a; color: #e5efff;
+                gridline-color: #2a3b52; border: 1px solid #2b405b; border-radius: 9px;
             }
+            QTableWidget::item:selected { background: #1d6687; color: #ffffff; }
+            QTableWidget::item:hover { background: #244363; }
             QHeaderView::section {
-                background: #243447; color: #ffffff; padding: 7px; border: 0; font-weight: 600;
+                background: #1c344e; color: #bfeadd; padding: 8px; border: 0; border-right: 1px solid #2b4961; font-weight: 700;
             }
             QProgressBar {
-                background: #e8edf3; color: #243447; border: 1px solid #cfd7df;
+                background: #15253a; color: #e8f1ff; border: 1px solid #36506a;
                 border-radius: 7px; min-height: 16px; max-height: 18px; text-align: center;
                 font-size: 11px; font-weight: 600;
             }
             QProgressBar::chunk {
-                background: #2f8fed; border-radius: 6px;
+                background: #29c4b3; border-radius: 6px;
             }
             QProgressBar#downloadProgress::chunk {
-                background: #2f9e44;
+                background: #39b77a;
             }
             QProgressBar#processProgress::chunk {
-                background: #2563eb;
+                background: #32a4d6;
             }
             QFrame#scoreCard, QFrame#panel {
-                background: #ffffff; border: 1px solid #d8dee6; border-radius: 8px;
+                background: #14243a; border: 1px solid #2b4861; border-radius: 11px;
             }
             QLabel#cardTitle {
-                background: transparent; color: #56606b; font-size: 12px; font-weight: 600;
+                background: transparent; color: #a7bed6; font-size: 12px; font-weight: 600;
             }
             QLabel#cardValue {
-                background: transparent; color: #0b3d2e; font-size: 17px; font-weight: 700;
+                background: transparent; color: #75ecdb; font-size: 17px; font-weight: 700;
             }
             QLabel#heroLabel {
-                background: #ffffff; border-left: 4px solid #2f9e44; border-radius: 6px;
-                padding: 12px; font-weight: 600;
+                background: #142941; border-left: 4px solid #2bd5be; border-radius: 9px;
+                padding: 14px; font-weight: 700; color: #ddf8f2;
             }
             QLabel#sectionTitle {
-                background: transparent; color: #243447; font-size: 15px; font-weight: 700; padding-top: 6px;
+                background: transparent; color: #e9f4ff; font-size: 15px; font-weight: 700; padding-top: 7px;
             }
             QLabel#processState {
-                background: transparent; color: #0f5f8f; font-weight: 700;
+                background: transparent; color: #70d8ee; font-weight: 700;
             }
             QLabel#processSteps {
-                background: #f8fafc; border: 1px solid #e1e6ec; border-radius: 6px;
-                color: #243447; padding: 8px; font-weight: 600;
+                background: #182e45; border: 1px solid #35516b; border-radius: 8px;
+                color: #d2e8fa; padding: 9px; font-weight: 600;
             }
             QLabel#processPlan {
-                background: transparent; color: #56606b; font-size: 12px;
+                background: transparent; color: #a7bed6; font-size: 12px;
+            }
+            QLabel#connectionStatus {
+                background: #102637; border: 1px solid #2c5f66; border-radius: 8px;
+                color: #aee9e0; padding: 10px; min-height: 18px;
             }
             """
         )

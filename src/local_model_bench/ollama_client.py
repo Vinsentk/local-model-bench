@@ -139,6 +139,32 @@ class OllamaClient:
             details = (result.stderr or result.stdout or "").strip()
             raise OllamaError(f"ollama rm failed for {model}: {details}")
 
+    def create_from_gguf(self, path: str, model: str) -> None:
+        """Register a downloaded local GGUF with Ollama without moving its source."""
+        import re
+        import tempfile
+        from pathlib import Path
+
+        source = Path(path).resolve()
+        if not source.is_file() or source.suffix.lower() != ".gguf":
+            raise OllamaError("Select an existing GGUF file.")
+        if not re.fullmatch(r"[a-z0-9_.-]+(?::[a-z0-9_.-]+)?", model):
+            raise OllamaError("Ollama model name may contain lower-case letters, digits, . _ - and one tag colon.")
+        if model in {item.name for item in self.list_models()}:
+            raise OllamaError("That Ollama model name already exists.")
+        with tempfile.TemporaryDirectory(prefix="local-model-bench-") as folder:
+            modelfile = Path(folder) / "Modelfile"
+            modelfile.write_text(f'FROM "{source.as_posix()}"\n', encoding="utf-8")
+            result = subprocess.run(
+                ["ollama", "create", model, "-f", str(modelfile)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                **_hidden_subprocess_kwargs(),
+            )
+        if result.returncode != 0:
+            raise OllamaError(f"ollama create failed: {(result.stderr or result.stdout).strip()[:500]}")
+        if model not in {item.name for item in self.list_models()}:
+            raise OllamaError("Ollama create returned success but the model is absent from /api/tags.")
+
     def ps(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         try:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from dataclasses import replace
 from statistics import mean
 
 from .models import BenchmarkCaseResult, BenchmarkReport, HardwareInfo, OllamaModel, utc_now_iso
@@ -145,8 +146,11 @@ class BenchmarkRunner:
 
         if cases and any(not case.passed for case in cases) and status == "OK":
             status = "PARTIAL"
-        avg_tps = mean([case.tokens_per_second for case in cases]) if cases else 0.0
+        measured = [case.tokens_per_second for case in cases if case.tokens_per_second > 0]
+        avg_tps = mean(measured) if measured else 0.0
         score = self.scoring.score(cases, model, self.hardware, error)
+        if mode == "smoke" or status != "OK":
+            score = replace(score, recommended_uses=["needs_more_tests"])
         return BenchmarkReport(
             model_name=model.name,
             source=model.source,
@@ -162,6 +166,7 @@ class BenchmarkRunner:
             resource_summary=resource_summary,
             run_settings={
                 "mode": mode,
+                "tps_source": "ollama_eval",
                 "warmup_runs": warmup_runs,
                 "repeat_count": repeat_count,
                 "timeout_seconds": timeout_seconds,

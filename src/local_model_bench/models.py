@@ -48,8 +48,7 @@ class GenerationResult:
             seconds = self.eval_duration_ns / 1_000_000_000
             if seconds > 0:
                 return self.eval_count / seconds
-        if self.elapsed_seconds > 0:
-            return max(0.0, len(self.text.split()) / self.elapsed_seconds)
+        # Word count divided by wall time is not measured token throughput.
         return 0.0
 
     @property

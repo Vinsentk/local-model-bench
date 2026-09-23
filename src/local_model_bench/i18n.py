@@ -699,6 +699,50 @@ TEXT["zh"] = TEXT["en"] | {
 }
 
 
+TEXT["en"].update({
+    "register_ollama": "Import GGUF to Ollama", "register_opencodex": "Register in OpenCodex",
+    "chart_comparison": "MODEL COMPARISON",
+    "connect_codex": "Connect to Codex", "basic_test": "Basic run test",
+    "select_model_first": "Select an installed model first.",
+    "ollama_name_prompt": "Ollama model name:",
+    "delete_connections_body": "Remove this model from Ollama, OpenCodex and Codex? Historical benchmark results stay available.",
+    "connection_hint": "Choose an installed model to register, connect or test. GGUF import uses a local file.",
+    "connection_working": "Checking selected model and connections...",
+    "benchmark_running": "A benchmark is already running.",
+    "basic_test_pass": "Basic generation passed", "basic_test_fail": "Basic generation failed",
+    "tps_unmeasured": "unmeasured",
+})
+TEXT["ko"].update({
+    "register_ollama": "GGUF → Ollama 등록", "register_opencodex": "OpenCodex 등록",
+    "chart_comparison": "모델 비교 그래프",
+    "connect_codex": "Codex 연결", "basic_test": "기초 구동 테스트",
+    "select_model_first": "설치된 모델을 먼저 선택하세요.",
+    "ollama_name_prompt": "Ollama 모델 이름:",
+    "delete_connections_body": "선택 모델을 Ollama에서 삭제하고 OpenCodex·Codex 연결을 해제할까요? 벤치마크 기록은 남습니다.",
+    "connection_hint": "모델을 선택해 등록·연결·테스트하세요. GGUF 등록은 로컬 파일을 선택합니다.",
+    "connection_working": "선택 모델과 연결 상태를 확인하는 중...",
+    "benchmark_running": "벤치마크가 이미 실행 중입니다.",
+    "basic_test_pass": "기초 생성 성공", "basic_test_fail": "기초 생성 실패",
+    "tps_unmeasured": "미측정",
+})
+TEXT["ja"].update({
+    "register_ollama": "GGUFをOllamaへ登録", "register_opencodex": "OpenCodexに登録",
+    "chart_comparison": "モデル比較グラフ",
+    "connect_codex": "Codexに接続", "basic_test": "基本動作テスト",
+    "select_model_first": "インストール済みモデルを選択してください。",
+    "connection_hint": "モデルを選択して登録・接続・テストします。",
+    "tps_unmeasured": "未測定",
+})
+TEXT["zh"].update({
+    "register_ollama": "导入GGUF到Ollama", "register_opencodex": "注册到OpenCodex",
+    "chart_comparison": "模型对比图表",
+    "connect_codex": "连接Codex", "basic_test": "基础运行测试",
+    "select_model_first": "请先选择已安装模型。",
+    "connection_hint": "选择模型以注册、连接或测试。",
+    "tps_unmeasured": "未测量",
+})
+
+
 def tr(language: str, key: str) -> str:
     return TEXT.get(language, TEXT["en"]).get(key, TEXT["en"].get(key, key))
 
